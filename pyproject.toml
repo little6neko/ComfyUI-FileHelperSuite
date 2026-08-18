@@ -1,0 +1,18 @@
+[project]
+name = "comfyui-filehelpersuite"
+version = "0.1.0"
+description = "Focused local-file helper nodes for ComfyUI"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+    { name = "little6neko", email = "little6carbon@163.com" },
+]
+dependencies = []
+classifiers = [
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
