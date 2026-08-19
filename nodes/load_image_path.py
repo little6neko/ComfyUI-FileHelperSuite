@@ -4,6 +4,7 @@ import hashlib
 import io
 import math
 import os
+import stat
 import warnings
 from collections.abc import Iterator
 
@@ -23,6 +24,11 @@ except AttributeError:  # Pillow < 9.1
     LANCZOS = Image.LANCZOS
 
 
+IMAGE_FILE_EXTENSIONS = frozenset(
+    extension.casefold() for extension in Image.registered_extensions()
+)
+
+
 class ImagePathError(ValueError):
     """Raised when an image path cannot be used."""
 
@@ -35,14 +41,20 @@ class UnsafeImageError(ValueError):
     """Raised when source or target dimensions exceed Pillow's safety limit."""
 
 
-def normalize_image_path(value: str) -> str:
-    """Normalize user-entered paths consistently across node and preview code."""
+def strip_image_path(value: str) -> str:
+    """Remove supported user-entry decoration without resolving the path."""
     if not isinstance(value, str):
         raise ImagePathError("Image path must be a string.")
 
     path = value.strip()
     if len(path) >= 2 and path[0] == path[-1] and path[0] in {"'", '"'}:
         path = path[1:-1]
+    return path
+
+
+def normalize_image_path(value: str) -> str:
+    """Normalize user-entered paths consistently across node and preview code."""
+    path = strip_image_path(value)
     if not path:
         raise ImagePathError("Image path is empty.")
 
@@ -50,6 +62,108 @@ def normalize_image_path(value: str) -> str:
         return os.path.abspath(os.path.expanduser(path))
     except (OSError, ValueError) as exc:
         raise ImagePathError("Image path is invalid.") from exc
+
+
+def _has_trailing_separator(path: str) -> bool:
+    separators = [os.sep]
+    if os.altsep:
+        separators.append(os.altsep)
+    return path.endswith(tuple(separators))
+
+
+def resolve_browser_location(value: str) -> tuple[str, str]:
+    """Resolve a directory and filename prefix from path-browser input."""
+    path = strip_image_path(value)
+    if not path:
+        try:
+            return os.path.abspath(os.curdir), ""
+        except OSError as exc:
+            raise ImagePathError("Current working directory is unavailable.") from exc
+
+    try:
+        candidate = os.path.abspath(os.path.expanduser(path))
+    except (OSError, ValueError) as exc:
+        raise ImagePathError("Image path is invalid.") from exc
+
+    try:
+        candidate_stat = os.stat(candidate)
+    except FileNotFoundError:
+        if _has_trailing_separator(path):
+            return candidate, ""
+        return os.path.dirname(candidate), os.path.basename(candidate)
+    except NotADirectoryError:
+        return os.path.dirname(candidate), os.path.basename(candidate)
+    except PermissionError:
+        raise
+    except (OSError, ValueError) as exc:
+        raise ImagePathError("Image path is invalid.") from exc
+
+    if stat.S_ISDIR(candidate_stat.st_mode):
+        return candidate, ""
+    return os.path.dirname(candidate), os.path.basename(candidate)
+
+
+def _browser_parent(directory: str) -> str | None:
+    parent = os.path.dirname(os.path.normpath(directory))
+    if os.path.normcase(parent) == os.path.normcase(os.path.normpath(directory)):
+        return None
+    return parent
+
+
+def list_image_paths(value: str) -> dict[str, object]:
+    """List browsable directories and Pillow-supported images for a path."""
+    directory, remainder = resolve_browser_location(value)
+    entries: list[dict[str, str]] = []
+
+    try:
+        with os.scandir(directory) as directory_entries:
+            for entry in directory_entries:
+                try:
+                    if entry.is_dir():
+                        kind = "directory"
+                    elif entry.is_file() and (
+                        os.path.splitext(entry.name)[1].casefold()
+                        in IMAGE_FILE_EXTENSIONS
+                    ):
+                        kind = "file"
+                    else:
+                        continue
+                    entries.append(
+                        {
+                            "name": entry.name,
+                            "path": os.path.abspath(entry.path),
+                            "kind": kind,
+                        }
+                    )
+                except OSError:
+                    # Broken links and entries removed during iteration are skipped.
+                    continue
+    except FileNotFoundError as exc:
+        raise FileNotFoundError(
+            f"Directory does not exist: {directory}"
+        ) from exc
+    except NotADirectoryError as exc:
+        raise FileNotFoundError(
+            f"Directory does not exist: {directory}"
+        ) from exc
+    except PermissionError as exc:
+        raise PermissionError(
+            f"Directory is not accessible: {directory}"
+        ) from exc
+
+    entries.sort(
+        key=lambda entry: (
+            entry["kind"] != "directory",
+            entry["name"].casefold(),
+            entry["name"],
+        )
+    )
+    return {
+        "directory": directory,
+        "parent": _browser_parent(directory),
+        "remainder": remainder,
+        "entries": entries,
+    }
 
 
 def require_image_file(value: str) -> str:

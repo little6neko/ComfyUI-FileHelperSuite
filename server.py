@@ -11,12 +11,14 @@ from .nodes.load_image_path import (
     ImageDecodeError,
     ImagePathError,
     UnsafeImageError,
+    list_image_paths,
     render_preview_png,
 )
 
 
 LOGGER = logging.getLogger(__name__)
 PREVIEW_ROUTE = "/fhs/view-image"
+LIST_PATH_ROUTE = "/fhs/list-path"
 
 
 def _query_dimension(request: web.Request, name: str) -> int:
@@ -36,6 +38,30 @@ def _error_response(message: str, status: int) -> web.Response:
     return web.json_response(
         {"error": message},
         status=status,
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@PromptServer.instance.routes.get(LIST_PATH_ROUTE)
+async def list_path(request: web.Request) -> web.Response:
+    path = request.rel_url.query.get("path", "")
+    try:
+        listing = await asyncio.to_thread(list_image_paths, path)
+    except FileNotFoundError as exc:
+        return _error_response(str(exc), 404)
+    except PermissionError as exc:
+        return _error_response(str(exc), 403)
+    except (ImagePathError, ValueError) as exc:
+        return _error_response(str(exc), 400)
+    except OSError:
+        LOGGER.exception("Unexpected server path listing failure")
+        return _error_response("Unable to list the requested directory.", 500)
+    except Exception:
+        LOGGER.exception("Unexpected server path browser failure")
+        return _error_response("Unable to list the requested directory.", 500)
+
+    return web.json_response(
+        listing,
         headers={"Cache-Control": "no-store"},
     )
 

@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import sys
 import types
 from pathlib import Path
 
 
-def test_package_exports_node_and_registers_preview_route(monkeypatch):
+def test_package_exports_node_and_registers_routes(monkeypatch, tmp_path):
     registered_routes = {}
 
     class FakeRoutes:
@@ -62,4 +63,46 @@ def test_package_exports_node_and_registers_preview_route(monkeypatch):
     assert package.NODE_DISPLAY_NAME_MAPPINGS == {
         "FHS_LoadImagePath": "Load Image (Path)"
     }
-    assert set(registered_routes) == {"/fhs/view-image"}
+    assert set(registered_routes) == {
+        "/fhs/list-path",
+        "/fhs/view-image",
+    }
+
+    request = types.SimpleNamespace(
+        rel_url=types.SimpleNamespace(query={"path": str(tmp_path)})
+    )
+    response = asyncio.run(registered_routes["/fhs/list-path"](request))
+    listing = response.kwargs["args"][0]
+    assert listing["directory"] == str(tmp_path)
+    assert response.kwargs["headers"] == {"Cache-Control": "no-store"}
+
+    missing_request = types.SimpleNamespace(
+        rel_url=types.SimpleNamespace(
+            query={"path": str(tmp_path / "missing" / "partial")}
+        )
+    )
+    missing_response = asyncio.run(
+        registered_routes["/fhs/list-path"](missing_request)
+    )
+    assert missing_response.kwargs["status"] == 404
+    assert "does not exist" in missing_response.kwargs["args"][0]["error"]
+
+    invalid_request = types.SimpleNamespace(
+        rel_url=types.SimpleNamespace(query={"path": "bad\0path"})
+    )
+    invalid_response = asyncio.run(
+        registered_routes["/fhs/list-path"](invalid_request)
+    )
+    assert invalid_response.kwargs["status"] == 400
+
+    with monkeypatch.context() as context:
+        context.setattr(
+            package._server,
+            "list_image_paths",
+            lambda _path: (_ for _ in ()).throw(PermissionError("denied")),
+        )
+        denied_response = asyncio.run(
+            registered_routes["/fhs/list-path"](request)
+        )
+    assert denied_response.kwargs["status"] == 403
+    assert denied_response.kwargs["args"][0] == {"error": "denied"}

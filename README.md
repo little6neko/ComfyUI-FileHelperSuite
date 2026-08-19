@@ -5,6 +5,7 @@
 ## 功能
 
 - 从任意本地路径加载静态图片或动图。
+- 点击 `image` 路径控件浏览 ComfyUI 服务器目录并选择图片。
 - 输出 `IMAGE`、`MASK` 和不含扩展名的 `filename`。
 - 使用 `custom_width`、`custom_height` 调整输出尺寸。
 - 图片路径或尺寸变化后即时刷新预览。
@@ -46,6 +47,19 @@ File Helper Suite / Image / Load Image (Path)
 | `mask` | `MASK` | Alpha 的反向遮罩；无 Alpha 时为零遮罩。 |
 | `filename` | `STRING` | 去掉最后一个扩展名的文件名。例如 `draft.v2.png` 返回 `draft.v2`。 |
 
+## 服务器路径选择
+
+点击节点中的 `image` 路径控件会打开 File Helper Suite 路径窗口：
+
+- 路径为空时从 ComfyUI 进程的工作目录开始。
+- 可以进入子目录、返回上级目录并选择 Pillow 支持的图片。
+- 选择图片后会写入服务器上的绝对路径并立即刷新预览。
+- 仍可手动输入或粘贴绝对路径、相对路径、带引号路径。
+- `Enter` 或“确定”提交手动路径，`Esc` 取消本次选择。
+
+这里浏览的是运行 ComfyUI 的服务器文件系统。如果浏览器和 ComfyUI
+不在同一台机器上，它不会浏览浏览器所在电脑的文件。
+
 ## 尺寸规则
 
 - 两项均为 `0`：从原始宽高开始。
@@ -62,7 +76,7 @@ File Helper Suite / Image / Load Image (Path)
 
 ## 路径与安全
 
-执行节点前会检查路径是否存在、是否为普通文件以及 Pillow 能否识别图片。预览接口不会直接发送任意本地文件的原始字节，而是解码首帧、限制最长边并重新编码为 PNG。
+执行节点前会检查路径是否存在、是否为普通文件以及 Pillow 能否识别图片。路径浏览接口只返回当前 ComfyUI 系统账户可访问的目录和图片路径信息。预览接口不会直接发送任意本地文件的原始字节，而是解码首帧、限制最长边并重新编码为 PNG。
 
 浏览器预览失败不会影响 ComfyUI 前端；执行节点时仍会给出具体的路径或解码错误。
 
@@ -74,6 +88,8 @@ File Helper Suite / Image / Load Image (Path)
 python3 -m pytest
 python3 -m compileall -q __init__.py nodes server.py tests
 node --check web/js/load_image_path.js
+node --check web/js/server_path_browser.js
+node --test tests/frontend_path_browser.test.mjs
 ```
 
 ## 行为参考

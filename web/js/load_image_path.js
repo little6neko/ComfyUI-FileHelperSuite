@@ -1,5 +1,6 @@
 import { app } from "../../../scripts/app.js";
 import { api } from "../../../scripts/api.js";
+import { enhanceServerPathWidget } from "./server_path_browser.js";
 
 
 const EXTENSION_NAME = "ComfyUI.FileHelperSuite.LoadImagePath";
@@ -113,6 +114,12 @@ app.registerExtension({
             const heightWidget = node.widgets?.find(
                 (widget) => widget.name === "custom_height",
             );
+            const removePathBrowser = enhanceServerPathWidget({
+                widget: imageWidget,
+                node,
+                app,
+                api,
+            });
 
             let debounceTimer;
             let requestController;
@@ -241,6 +248,7 @@ app.registerExtension({
                 requestSequence += 1;
                 requestController?.abort();
                 revokePreviewUrl();
+                removePathBrowser();
             });
 
             schedulePreview(0);
