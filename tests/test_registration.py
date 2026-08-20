@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import os
 import sys
 import types
 from pathlib import Path
@@ -73,7 +74,8 @@ def test_package_exports_node_and_registers_routes(monkeypatch, tmp_path):
     )
     response = asyncio.run(registered_routes["/fhs/list-path"](request))
     listing = response.kwargs["args"][0]
-    assert listing["directory"] == str(tmp_path)
+    assert listing["directory"] == f"{tmp_path}{os.sep}"
+    assert listing["value"] == f"{tmp_path}{os.sep}"
     assert response.kwargs["headers"] == {"Cache-Control": "no-store"}
 
     missing_request = types.SimpleNamespace(

@@ -1,6 +1,10 @@
 import { app } from "../../../scripts/app.js";
 import { api } from "../../../scripts/api.js";
-import { enhanceServerPathWidget } from "./server_path_browser.js";
+import {
+    PATH_WIDGET_FACTORY,
+    createServerPathWidgetFactory,
+    replaceServerPathWidget,
+} from "./server_path_browser.js";
 
 
 const EXTENSION_NAME = "ComfyUI.FileHelperSuite.LoadImagePath";
@@ -76,6 +80,12 @@ function createPreviewElements() {
 app.registerExtension({
     name: EXTENSION_NAME,
 
+    getCustomWidgets() {
+        return {
+            [PATH_WIDGET_FACTORY]: createServerPathWidgetFactory({ app, api }),
+        };
+    },
+
     async beforeRegisterNodeDef(nodeType, nodeData) {
         if (nodeData?.name !== NODE_NAME) {
             return;
@@ -83,6 +93,25 @@ app.registerExtension({
 
         chainCallback(nodeType.prototype, "onNodeCreated", function () {
             const node = this;
+            const generatedImageWidget = node.widgets?.find(
+                (widget) => widget.name === "image",
+            );
+            const imageInputData = (
+                nodeData.input?.required?.image
+                ?? nodeData.input?.optional?.image
+            );
+            const {
+                widget: imageWidget,
+                cleanup: removePathBrowser,
+            } = replaceServerPathWidget({
+                widget: generatedImageWidget,
+                node,
+                inputData: imageInputData,
+                app,
+                api,
+                factory: app.widgets?.[PATH_WIDGET_FACTORY],
+            });
+
             const { container, image, status } = createPreviewElements();
             const previewWidget = node.addDOMWidget(
                 "fhs_image_preview",
@@ -105,22 +134,12 @@ app.registerExtension({
                 Math.max(node.size?.[1] ?? 0, minimumSize[1], 420),
             ]);
 
-            const imageWidget = node.widgets?.find(
-                (widget) => widget.name === "image",
-            );
             const widthWidget = node.widgets?.find(
                 (widget) => widget.name === "custom_width",
             );
             const heightWidget = node.widgets?.find(
                 (widget) => widget.name === "custom_height",
             );
-            const removePathBrowser = enhanceServerPathWidget({
-                widget: imageWidget,
-                node,
-                app,
-                api,
-            });
-
             let debounceTimer;
             let requestController;
             let previewObjectUrl;

@@ -10,7 +10,12 @@ const source = await readFile(
 const moduleUrl = (
     `data:text/javascript;base64,${Buffer.from(source).toString("base64")}`
 );
-const { enhanceServerPathWidget, PATH_WIDGET_TYPE } = await import(moduleUrl);
+const {
+    PATH_WIDGET_FACTORY,
+    PATH_WIDGET_TYPE,
+    createServerPathWidgetFactory,
+    replaceServerPathWidget,
+} = await import(moduleUrl);
 
 
 class FakeElement {
@@ -96,20 +101,40 @@ class FakeDocument {
 }
 
 
-function makeHarness(fetchApi) {
+function makeHarness(fetchApi, { initialValue = "" } = {}) {
     const documentRef = new FakeDocument();
     const callbackValues = [];
-    const widget = {
+    const nativeCalls = [];
+    const serializeValue = async function () {
+        return this.value;
+    };
+    const oldWidget = {
         name: "image",
         type: "text",
-        value: "",
+        value: initialValue,
         options: { placeholder: "X://path/to/image.png" },
+        config: ["STRING", { default: "", fhs_path: true }],
+        serialize: true,
+        serializeValue,
         callback(value) {
             callbackValues.push(value);
         },
+        mouse() {
+            nativeCalls.push("mouse");
+        },
+        onPointerDown() {
+            nativeCalls.push("pointer");
+        },
+        onClick() {
+            nativeCalls.push("click");
+        },
+        prompt: true,
     };
+    const beforeWidget = { name: "before" };
+    const afterWidget = { name: "after" };
     const dirtyCalls = [];
     const node = {
+        widgets: [beforeWidget, oldWidget, afterWidget],
         graph: {
             setDirtyCanvas(...args) {
                 dirtyCalls.push(args);
@@ -127,22 +152,42 @@ function makeHarness(fetchApi) {
             },
         },
     };
-    const cleanup = enhanceServerPathWidget({
-        widget,
-        node,
+    const inputData = [
+        "STRING",
+        {
+            default: "",
+            placeholder: "X://path/to/image.png",
+            fhs_path: true,
+        },
+    ];
+    const factory = createServerPathWidgetFactory({
         app,
         api: { fetchApi },
         documentRef,
         debounceMs: 0,
     });
-    return {
+    const replacement = replaceServerPathWidget({
+        widget: oldWidget,
+        node,
+        inputData,
         app,
+        api: { fetchApi },
+        factory,
+        documentRef,
+        debounceMs: 0,
+    });
+    return {
+        ...replacement,
+        afterWidget,
+        app,
+        beforeWidget,
         callbackValues,
-        cleanup,
         dirtyCalls,
         documentRef,
+        nativeCalls,
         node,
-        widget,
+        oldWidget,
+        serializeValue,
     };
 }
 
@@ -169,90 +214,162 @@ async function waitFor(predicate, timeoutMs = 500) {
 }
 
 
-test("opens one dialog and commits a selected image", async () => {
+test("replaces the native text widget at the same index", () => {
+    const harness = makeHarness(async () => okResponse({
+        directory: "",
+        value: "",
+        parent: null,
+        remainder: "",
+        entries: [],
+    }));
+
+    assert.equal(PATH_WIDGET_FACTORY, "FHSPATH");
+    assert.equal(harness.node.widgets.length, 3);
+    assert.equal(harness.node.widgets[0], harness.beforeWidget);
+    assert.equal(harness.node.widgets[1], harness.widget);
+    assert.equal(harness.node.widgets[2], harness.afterWidget);
+    assert.notEqual(harness.widget, harness.oldWidget);
+    assert.equal(harness.widget.type, PATH_WIDGET_TYPE);
+    assert.equal(harness.widget.serialize, true);
+    assert.equal(harness.widget.serializeValue, harness.serializeValue);
+    assert.equal(harness.widget.config, harness.oldWidget.config);
+    assert.notEqual(harness.widget.mouse, harness.oldWidget.mouse);
+    assert.equal("onPointerDown" in harness.widget, false);
+    assert.equal("onClick" in harness.widget, false);
+    assert.equal("prompt" in harness.widget, false);
+    assert.deepEqual(harness.nativeCalls, []);
+    harness.cleanup();
+});
+
+
+test("one click path control has the exact four-part dialog", async () => {
     const listing = {
-        directory: "/srv",
-        parent: "/",
+        directory: "",
+        value: "",
+        parent: null,
         remainder: "",
         entries: [
-            { name: "images", path: "/srv/images", kind: "directory" },
-            { name: "sample.png", path: "/srv/sample.png", kind: "file" },
+            { name: "input", path: "input/", kind: "directory" },
+            { name: "sample.png", path: "sample.png", kind: "file" },
         ],
     };
     const harness = makeHarness(async () => okResponse(listing));
 
-    assert.equal(harness.widget.type, PATH_WIDGET_TYPE);
-    harness.widget.mouse({ clientX: 100, clientY: 120 });
-    harness.widget.mouse({ clientX: 100, clientY: 120 });
+    harness.widget.mouse({ clientX: 100, clientY: 120 }, [0, 0], harness.node);
+    harness.widget.mouse({ clientX: 100, clientY: 120 }, [0, 0], harness.node);
     assert.equal(harness.documentRef.body.children.length, 1);
+    assert.deepEqual(harness.nativeCalls, []);
 
-    await waitFor(() => (
-        harness.widget.fhsPathBrowserState?.entries.children.length === 3
-    ));
     const state = harness.widget.fhsPathBrowserState;
-    const fileEntry = state.entries.children.find(
+    assert.equal(state.dialog.className, "litegraph litesearchbox graphdialog rounded");
+    assert.deepEqual(
+        state.dialog.children.map((element) => element.tagName),
+        ["span", "input", "button", "div"],
+    );
+    assert.equal(state.dialog.children[0].className, "name");
+    assert.equal(state.dialog.children[0].textContent, "Path");
+    assert.equal(state.dialog.children[1].className, "value");
+    assert.equal(state.dialog.children[2].className, "rounded");
+    assert.equal(state.dialog.children[2].textContent, "OK");
+    assert.equal(state.dialog.children[3].className, "helper");
+    assert.equal("status" in state, false);
+
+    await waitFor(() => state.helper.children.length === 2);
+    const fileEntry = state.helper.children.find(
         (entry) => entry.fhsPathEntry?.kind === "file",
     );
     await fileEntry.dispatch("click");
 
-    assert.equal(harness.widget.value, "/srv/sample.png");
-    assert.deepEqual(harness.callbackValues, ["/srv/sample.png"]);
+    assert.equal(harness.widget.value, "sample.png");
+    assert.deepEqual(harness.callbackValues, ["sample.png"]);
     assert.deepEqual(harness.dirtyCalls, [[true, true]]);
     assert.equal(harness.documentRef.body.children.length, 0);
     assert.equal(harness.widget.fhsPathBrowserState, undefined);
 });
 
 
-test("navigates directories using server-provided paths", async () => {
+test("canonicalizes a legacy root absolute value only on confirmation", async () => {
+    const absolute = "/srv/ComfyUI/input/sample.png";
+    const relative = "input/sample.png";
+    const harness = makeHarness(
+        async () => okResponse({
+            directory: "input/",
+            value: relative,
+            parent: "",
+            remainder: "sample.png",
+            entries: [
+                { name: "sample.png", path: relative, kind: "file" },
+            ],
+        }),
+        { initialValue: absolute },
+    );
+
+    harness.widget.mouse({ clientX: 20, clientY: 20 }, [0, 0], harness.node);
+    await waitFor(() => (
+        harness.widget.fhsPathBrowserState?.input.value === relative
+    ));
+    const state = harness.widget.fhsPathBrowserState;
+
+    assert.equal(harness.widget.value, absolute);
+    await state.confirmButton.dispatch("click");
+    assert.equal(harness.widget.value, relative);
+    assert.deepEqual(harness.callbackValues, [relative]);
+});
+
+
+test("navigates directories using server-provided relative paths", async () => {
     const requestedPaths = [];
     const harness = makeHarness(async (url) => {
         const requestUrl = new URL(url, "http://localhost");
         const path = requestUrl.searchParams.get("path");
         requestedPaths.push(path);
-        if (path === "/srv/images") {
+        if (path === "input/") {
             return okResponse({
-                directory: "/srv/images",
-                parent: "/srv",
+                directory: "input/",
+                value: "input/",
+                parent: "",
                 remainder: "",
                 entries: [
                     {
                         name: "chosen.webp",
-                        path: "/srv/images/chosen.webp",
+                        path: "input/chosen.webp",
                         kind: "file",
                     },
                 ],
             });
         }
         return okResponse({
-            directory: "/srv",
-            parent: "/",
+            directory: "",
+            value: "",
+            parent: null,
             remainder: "",
             entries: [
-                { name: "images", path: "/srv/images", kind: "directory" },
+                { name: "input", path: "input/", kind: "directory" },
             ],
         });
     });
 
-    harness.widget.mouse({ clientX: 20, clientY: 20 });
+    harness.widget.mouse({ clientX: 20, clientY: 20 }, [0, 0], harness.node);
     await waitFor(() => (
-        harness.widget.fhsPathBrowserState?.entries.children.length === 2
+        harness.widget.fhsPathBrowserState?.helper.children.length === 1
     ));
-    const directoryEntry = harness.widget.fhsPathBrowserState.entries.children.find(
-        (entry) => entry.fhsPathEntry?.path === "/srv/images",
+    const directoryEntry = harness.widget.fhsPathBrowserState.helper.children.find(
+        (entry) => entry.fhsPathEntry?.path === "input/",
     );
     await directoryEntry.dispatch("click");
-    await waitFor(() => requestedPaths.includes("/srv/images"));
-    await waitFor(() => harness.widget.fhsPathBrowserState.entries.children.some(
+    await waitFor(() => requestedPaths.includes("input/"));
+    await waitFor(() => harness.widget.fhsPathBrowserState.helper.children.some(
         (entry) => entry.fhsPathEntry?.kind === "file",
     ));
 
-    const fileEntry = harness.widget.fhsPathBrowserState.entries.children.find(
+    const fileEntry = harness.widget.fhsPathBrowserState.helper.children.find(
         (entry) => entry.fhsPathEntry?.kind === "file",
     );
     await fileEntry.dispatch("click");
 
-    assert.equal(harness.widget.value, "/srv/images/chosen.webp");
-    assert.deepEqual(requestedPaths, ["", "/srv/images"]);
+    assert.equal(harness.widget.value, "input/chosen.webp");
+    assert.deepEqual(requestedPaths, ["", "input/"]);
+    assert.deepEqual(harness.callbackValues, ["input/chosen.webp"]);
 });
 
 
@@ -264,32 +381,34 @@ test("ignores a stale directory response after the path changes", async () => {
         if (requestCount === 1) {
             return await new Promise((resolve) => {
                 resolveFirstRequest = () => resolve(okResponse({
-                    directory: "/old",
-                    parent: "/",
+                    directory: "old/",
+                    value: "old/",
+                    parent: "",
                     remainder: "",
                     entries: [
-                        { name: "old.png", path: "/old/old.png", kind: "file" },
+                        { name: "old.png", path: "old/old.png", kind: "file" },
                     ],
                 }));
             });
         }
         return okResponse({
-            directory: "/new",
-            parent: "/",
+            directory: "new/",
+            value: "new/",
+            parent: "",
             remainder: "",
             entries: [
-                { name: "new.png", path: "/new/new.png", kind: "file" },
+                { name: "new.png", path: "new/new.png", kind: "file" },
             ],
         });
     });
 
-    harness.widget.mouse({ clientX: 20, clientY: 20 });
+    harness.widget.mouse({ clientX: 20, clientY: 20 }, [0, 0], harness.node);
     await waitFor(() => typeof resolveFirstRequest === "function");
     const state = harness.widget.fhsPathBrowserState;
-    state.input.value = "/new";
+    state.input.value = "new/";
     await state.input.dispatch("input");
     await waitFor(() => requestCount === 2);
-    await waitFor(() => state.entries.children.some(
+    await waitFor(() => state.helper.children.some(
         (entry) => entry.textContent === "new.png",
     ));
 
@@ -297,7 +416,7 @@ test("ignores a stale directory response after the path changes", async () => {
     await new Promise((resolve) => setTimeout(resolve, 5));
 
     assert.equal(
-        state.entries.children.some((entry) => entry.textContent === "old.png"),
+        state.helper.children.some((entry) => entry.textContent === "old.png"),
         false,
     );
     harness.cleanup();
@@ -326,27 +445,29 @@ test("manual confirmation, escape, errors, and cleanup stay bounded", async () =
         };
     });
 
-    harness.widget.mouse({ clientX: 20, clientY: 20 });
+    harness.widget.mouse({ clientX: 20, clientY: 20 }, [0, 0], harness.node);
     await waitFor(() => (
-        harness.widget.fhsPathBrowserState?.status.textContent
+        harness.widget.fhsPathBrowserState?.message?.textContent
         === "Directory is not accessible"
     ));
     let state = harness.widget.fhsPathBrowserState;
+    assert.equal(state.dialog.children.length, 4);
+    assert.equal(state.helper.children.length, 1);
     state.input.value = "relative/image.png";
     await state.input.dispatch("keydown", { key: "Enter" });
     assert.equal(harness.widget.value, "relative/image.png");
 
-    harness.widget.mouse({ clientX: 20, clientY: 20 });
+    harness.widget.mouse({ clientX: 20, clientY: 20 }, [0, 0], harness.node);
     state = harness.widget.fhsPathBrowserState;
     state.input.value = "should-not-commit.png";
     await state.input.dispatch("keydown", { key: "Escape" });
     assert.equal(harness.widget.value, "relative/image.png");
 
-    harness.widget.mouse({ clientX: 20, clientY: 20 });
+    harness.widget.mouse({ clientX: 20, clientY: 20 }, [0, 0], harness.node);
     await waitFor(() => requestSignals.length >= 2);
     const latestSignal = requestSignals.at(-1);
     harness.cleanup();
     assert.equal(latestSignal.aborted, true);
-    assert.equal(harness.widget.type, "text");
+    assert.equal(harness.widget.type, PATH_WIDGET_TYPE);
     assert.equal(harness.documentRef.body.children.length, 0);
 });

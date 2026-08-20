@@ -179,6 +179,9 @@ def test_node_interface_has_no_vae(loader_module):
 
     assert set(inputs) == {"required"}
     assert set(inputs["required"]) == {"image", "custom_width", "custom_height"}
+    image_type, image_options = inputs["required"]["image"]
+    assert image_type == "STRING"
+    assert image_options["fhs_path"] is True
     assert loader_module.LoadImagePath.RETURN_TYPES == ("IMAGE", "MASK", "STRING")
     assert loader_module.LoadImagePath.RETURN_NAMES == (
         "image",

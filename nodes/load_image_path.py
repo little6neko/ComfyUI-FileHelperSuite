@@ -71,14 +71,60 @@ def _has_trailing_separator(path: str) -> bool:
     return path.endswith(tuple(separators))
 
 
-def resolve_browser_location(value: str) -> tuple[str, str]:
+def _browser_root() -> str:
+    """Return the dynamic ComfyUI process root used by relative paths."""
+    try:
+        return os.path.abspath(os.curdir)
+    except OSError as exc:
+        raise ImagePathError(
+            "Current working directory is unavailable."
+        ) from exc
+
+
+def _same_path(left: str, right: str) -> bool:
+    return os.path.normcase(os.path.normpath(left)) == os.path.normcase(
+        os.path.normpath(right)
+    )
+
+
+def _is_within_browser_root(path: str, browser_root: str) -> bool:
+    """Return whether path is contained by root without prefix matching."""
+    try:
+        common = os.path.commonpath(
+            (os.path.abspath(path), os.path.abspath(browser_root))
+        )
+    except (OSError, ValueError):
+        # ValueError is expected for paths on different Windows drives.
+        return False
+    return _same_path(common, browser_root)
+
+
+def _browser_value(
+    path: str, browser_root: str, *, directory: bool = False
+) -> str:
+    """Convert an absolute server path to its canonical browser value."""
+    absolute = os.path.abspath(path)
+    value = absolute
+    if _is_within_browser_root(absolute, browser_root):
+        try:
+            relative = os.path.relpath(absolute, browser_root)
+        except (OSError, ValueError):
+            relative = None
+        if relative is not None:
+            value = "" if _same_path(relative, os.curdir) else relative
+
+    if directory and value and not _has_trailing_separator(value):
+        value += os.sep
+    return value
+
+
+def resolve_browser_location(
+    value: str, browser_root: str | None = None
+) -> tuple[str, str]:
     """Resolve a directory and filename prefix from path-browser input."""
     path = strip_image_path(value)
     if not path:
-        try:
-            return os.path.abspath(os.curdir), ""
-        except OSError as exc:
-            raise ImagePathError("Current working directory is unavailable.") from exc
+        return browser_root or _browser_root(), ""
 
     try:
         candidate = os.path.abspath(os.path.expanduser(path))
@@ -103,16 +149,34 @@ def resolve_browser_location(value: str) -> tuple[str, str]:
     return os.path.dirname(candidate), os.path.basename(candidate)
 
 
-def _browser_parent(directory: str) -> str | None:
-    parent = os.path.dirname(os.path.normpath(directory))
-    if os.path.normcase(parent) == os.path.normcase(os.path.normpath(directory)):
+def _browser_parent(
+    directory: str, browser_root: str | None = None
+) -> str | None:
+    root = browser_root or _browser_root()
+    normalized_directory = os.path.abspath(directory)
+    if _same_path(normalized_directory, root):
+        return None
+
+    parent = os.path.dirname(os.path.normpath(normalized_directory))
+    if _same_path(parent, normalized_directory):
+        return None
+    if (
+        _is_within_browser_root(normalized_directory, root)
+        and not _is_within_browser_root(parent, root)
+    ):
         return None
     return parent
 
 
 def list_image_paths(value: str) -> dict[str, object]:
     """List browsable directories and Pillow-supported images for a path."""
-    directory, remainder = resolve_browser_location(value)
+    browser_root = _browser_root()
+    directory, remainder = resolve_browser_location(value, browser_root)
+    directory_value = _browser_value(
+        directory, browser_root, directory=True
+    )
+    canonical_value = f"{directory_value}{remainder}"
+    display_directory = directory_value or os.curdir
     entries: list[dict[str, str]] = []
 
     try:
@@ -131,7 +195,11 @@ def list_image_paths(value: str) -> dict[str, object]:
                     entries.append(
                         {
                             "name": entry.name,
-                            "path": os.path.abspath(entry.path),
+                            "path": _browser_value(
+                                entry.path,
+                                browser_root,
+                                directory=kind == "directory",
+                            ),
                             "kind": kind,
                         }
                     )
@@ -140,15 +208,15 @@ def list_image_paths(value: str) -> dict[str, object]:
                     continue
     except FileNotFoundError as exc:
         raise FileNotFoundError(
-            f"Directory does not exist: {directory}"
+            f"Directory does not exist: {display_directory}"
         ) from exc
     except NotADirectoryError as exc:
         raise FileNotFoundError(
-            f"Directory does not exist: {directory}"
+            f"Directory does not exist: {display_directory}"
         ) from exc
     except PermissionError as exc:
         raise PermissionError(
-            f"Directory is not accessible: {directory}"
+            f"Directory is not accessible: {display_directory}"
         ) from exc
 
     entries.sort(
@@ -158,9 +226,15 @@ def list_image_paths(value: str) -> dict[str, object]:
             entry["name"],
         )
     )
+    parent = _browser_parent(directory, browser_root)
     return {
-        "directory": directory,
-        "parent": _browser_parent(directory),
+        "directory": directory_value,
+        "value": canonical_value,
+        "parent": (
+            None
+            if parent is None
+            else _browser_value(parent, browser_root, directory=True)
+        ),
         "remainder": remainder,
         "entries": entries,
     }
@@ -418,6 +492,7 @@ class LoadImagePath:
                         "default": "",
                         "placeholder": "X://path/to/image.png",
                         "tooltip": "Absolute or relative path to a local image.",
+                        "fhs_path": True,
                     },
                 ),
                 "custom_width": (

@@ -18,7 +18,9 @@ def test_frontend_uses_comfy_extension_import_depth():
     assert 'from "./server_path_browser.js"' in script
     assert 'objectFit: "contain"' in script
     assert "node.resizable = true" in script
-    assert "enhanceServerPathWidget" in script
+    assert "createServerPathWidgetFactory" in script
+    assert "replaceServerPathWidget" in script
+    assert "getCustomWidgets()" in script
 
 
 def test_path_browser_uses_file_helper_suite_names_only():
@@ -31,6 +33,9 @@ def test_path_browser_uses_file_helper_suite_names_only():
 
     assert 'SERVER_PATH_ROUTE = "/fhs/list-path"' in script
     assert 'PATH_WIDGET_TYPE = "FHS.PATH"' in script
+    assert 'PATH_WIDGET_FACTORY = "FHSPATH"' in script
+    assert 'label.textContent = "Path"' in script
+    assert 'confirmButton.textContent = "OK"' in script
     assert "VHS" not in script.upper()
 
 
