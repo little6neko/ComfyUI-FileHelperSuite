@@ -456,7 +456,6 @@ export function replaceServerPathWidget({
     for (const property of [
         "callback",
         "serialize",
-        "serializeValue",
         "linkedWidgets",
         "label",
         "disabled",

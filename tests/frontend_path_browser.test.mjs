@@ -105,9 +105,7 @@ function makeHarness(fetchApi, { initialValue = "" } = {}) {
     const documentRef = new FakeDocument();
     const callbackValues = [];
     const nativeCalls = [];
-    const serializeValue = async function () {
-        return this.value;
-    };
+    const serializeValue = async () => oldWidget.value;
     const oldWidget = {
         name: "image",
         type: "text",
@@ -214,7 +212,14 @@ async function waitFor(predicate, timeoutMs = 500) {
 }
 
 
-test("replaces the native text widget at the same index", () => {
+async function promptWidgetValue(widget, node, index) {
+    return widget.serializeValue
+        ? await widget.serializeValue(node, index)
+        : widget.value;
+}
+
+
+test("replaces the native text widget at the same index", async () => {
     const harness = makeHarness(async () => okResponse({
         directory: "",
         value: "",
@@ -231,13 +236,40 @@ test("replaces the native text widget at the same index", () => {
     assert.notEqual(harness.widget, harness.oldWidget);
     assert.equal(harness.widget.type, PATH_WIDGET_TYPE);
     assert.equal(harness.widget.serialize, true);
-    assert.equal(harness.widget.serializeValue, harness.serializeValue);
+    assert.equal("serializeValue" in harness.widget, false);
     assert.equal(harness.widget.config, harness.oldWidget.config);
     assert.notEqual(harness.widget.mouse, harness.oldWidget.mouse);
     assert.equal("onPointerDown" in harness.widget, false);
     assert.equal("onClick" in harness.widget, false);
     assert.equal("prompt" in harness.widget, false);
     assert.deepEqual(harness.nativeCalls, []);
+
+    harness.widget.value = "input/new-selection.png";
+    assert.equal(
+        await promptWidgetValue(harness.widget, harness.node, 1),
+        "input/new-selection.png",
+    );
+    assert.equal(await harness.serializeValue(), "");
+    harness.cleanup();
+});
+
+
+test("restored workflow paths serialize from the replacement widget", async () => {
+    const harness = makeHarness(async () => okResponse({
+        directory: "",
+        value: "",
+        parent: null,
+        remainder: "",
+        entries: [],
+    }));
+
+    harness.widget.value = "input/restored-workflow.png";
+
+    assert.equal(
+        await promptWidgetValue(harness.widget, harness.node, 1),
+        "input/restored-workflow.png",
+    );
+    assert.equal(harness.oldWidget.value, "");
     harness.cleanup();
 });
 
@@ -281,6 +313,10 @@ test("one click path control has the exact four-part dialog", async () => {
     await fileEntry.dispatch("click");
 
     assert.equal(harness.widget.value, "sample.png");
+    assert.equal(
+        await promptWidgetValue(harness.widget, harness.node, 1),
+        "sample.png",
+    );
     assert.deepEqual(harness.callbackValues, ["sample.png"]);
     assert.deepEqual(harness.dirtyCalls, [[true, true]]);
     assert.equal(harness.documentRef.body.children.length, 0);
