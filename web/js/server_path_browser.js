@@ -206,6 +206,8 @@ function openPathDialog({
         debounceTimer: undefined,
         requestController: undefined,
         requestSequence: 0,
+        composing: false,
+        canonicalizeInitialValue: true,
         message: undefined,
         close: () => closeActiveDialog(widget),
     };
@@ -234,6 +236,7 @@ function openPathDialog({
         entry.fhsPathEntry = { path, kind };
         entry.addEventListener("click", () => {
             if (kind === "directory") {
+                state.canonicalizeInitialValue = false;
                 state.input.value = path;
                 scheduleListing(0);
                 return;
@@ -246,7 +249,12 @@ function openPathDialog({
     function renderListing(listing) {
         state.helper.replaceChildren();
         state.message = undefined;
-        state.input.value = listing.value;
+        if (state.canonicalizeInitialValue) {
+            if (state.input.value !== listing.value) {
+                state.input.value = listing.value;
+            }
+            state.canonicalizeInitialValue = false;
+        }
 
         if (listing.parent !== null) {
             createEntry("../", listing.parent, "directory");
@@ -277,7 +285,9 @@ function openPathDialog({
         state.requestController?.abort();
         const controller = new AbortController();
         state.requestController = controller;
-        showMessage("正在读取路径…");
+        if (state.helper.children.length === 0) {
+            showMessage("正在读取路径…");
+        }
 
         const params = new URLSearchParams({ path: state.input.value });
         try {
@@ -320,11 +330,30 @@ function openPathDialog({
 
     function scheduleListing(delay = debounceMs) {
         clearTimeout(state.debounceTimer);
+        // Invalidate immediately, including the debounce window before a new fetch.
+        state.requestSequence += 1;
+        state.requestController?.abort();
         state.debounceTimer = setTimeout(refreshListing, delay);
     }
 
-    state.input.addEventListener("input", () => scheduleListing());
+    state.input.addEventListener("compositionstart", () => {
+        state.composing = true;
+        state.canonicalizeInitialValue = false;
+        scheduleListing();
+    });
+    state.input.addEventListener("compositionend", () => {
+        state.composing = false;
+        scheduleListing();
+    });
+    state.input.addEventListener("input", (event) => {
+        state.canonicalizeInitialValue = false;
+        if (event.isComposing) state.composing = true;
+        scheduleListing();
+    });
     state.input.addEventListener("keydown", (keyEvent) => {
+        if (state.composing || keyEvent.isComposing || keyEvent.keyCode === 229) {
+            return;
+        }
         if (keyEvent.key === "Escape") {
             keyEvent.preventDefault();
             keyEvent.stopPropagation();
@@ -336,6 +365,7 @@ function openPathDialog({
         }
     });
     state.confirmButton.addEventListener("click", () => {
+        if (state.composing) return;
         commitPath(widget, state, state.input.value, app, node);
     });
 

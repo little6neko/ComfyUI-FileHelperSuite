@@ -201,6 +201,84 @@ function okResponse(listing) {
 }
 
 
+test("IME refreshes candidates during composition without touching text", async () => {
+    let finishInitial;
+    let requests = 0;
+    const listing = {
+        directory: "input/", value: "input/", parent: "", remainder: "",
+        entries: [{ name: "sample.png", path: "input/sample.png", kind: "file" }],
+    };
+    const harness = makeHarness(async () => {
+        requests++;
+        if (requests === 1) return new Promise(resolve => {
+            finishInitial = () => resolve(okResponse(listing));
+        });
+        return okResponse(listing);
+    });
+    try {
+        harness.widget.mouse({});
+        await waitFor(() => finishInitial);
+        const state = harness.widget.fhsPathBrowserState;
+        await state.input.dispatch("compositionstart");
+        state.input.value = "input";
+        let inputWrites = 0;
+        let currentText = state.input.value;
+        Object.defineProperty(state.input, "value", {
+            get: () => currentText,
+            set: value => { inputWrites++; currentText = value; },
+        });
+        await state.input.dispatch("input", { isComposing: true });
+        await state.input.dispatch("keydown", { key: "Enter", isComposing: true });
+        await state.input.dispatch("keydown", { key: "Escape", isComposing: true });
+        assert.equal(harness.documentRef.body.children.length, 1);
+        assert.deepEqual(harness.callbackValues, []);
+        await waitFor(() => state.helper.children.some(
+            entry => entry.fhsPathEntry?.kind === "file",
+        ));
+        assert.equal(state.composing, true);
+        assert.equal(requests, 2);
+        finishInitial();
+        await new Promise(resolve => setTimeout(resolve, 10));
+        assert.equal(state.input.value, "input");
+        assert.equal(inputWrites, 0);
+        await state.input.dispatch("keydown", { key: "Shift", isComposing: true });
+        await state.input.dispatch("compositionend");
+        await state.input.dispatch("input", { isComposing: false });
+        await waitFor(() => requests === 3);
+        assert.equal(state.input.value, "input");
+        assert.equal(inputWrites, 0);
+        await state.input.dispatch("keydown", { key: "Enter" });
+        assert.equal(harness.widget.value, "input");
+    } finally {
+        harness.cleanup();
+    }
+});
+
+
+test("typing never writes a canonical directory back into the input", async () => {
+    const harness = makeHarness(async () => okResponse({
+        directory: "input/", value: "input/", parent: "", remainder: "",
+        entries: [{ name: "sample.png", path: "input/sample.png", kind: "file" }],
+    }));
+    try {
+        harness.widget.mouse({});
+        const state = harness.widget.fhsPathBrowserState;
+        state.input.value = "input";
+        state.input.selectionStart = 2;
+        state.input.selectionEnd = 2;
+        await state.input.dispatch("input");
+        await waitFor(() => state.helper.children.some(
+            entry => entry.fhsPathEntry?.kind === "file",
+        ));
+        assert.equal(state.input.value, "input");
+        assert.equal(state.input.selectionStart, 2);
+        assert.equal(state.input.selectionEnd, 2);
+    } finally {
+        harness.cleanup();
+    }
+});
+
+
 async function waitFor(predicate, timeoutMs = 500) {
     const started = Date.now();
     while (!predicate()) {
