@@ -11,7 +11,6 @@ const EXTENSION_NAME = "ComfyUI.FileHelperSuite.LoadImagePath";
 const NODE_NAME = "FHS_LoadImagePath";
 const PREVIEW_ROUTE = "/fhs/view-image";
 const PREVIEW_DEBOUNCE_MS = 150;
-const MIN_PREVIEW_HEIGHT = 120;
 
 
 function chainCallback(target, property, callback) {
@@ -21,59 +20,6 @@ function chainCallback(target, property, callback) {
         callback.apply(this, args);
         return result;
     };
-}
-
-
-function setStyles(element, styles) {
-    Object.assign(element.style, styles);
-    return element;
-}
-
-
-function createPreviewElements() {
-    const container = setStyles(document.createElement("div"), {
-        position: "relative",
-        display: "grid",
-        width: "100%",
-        height: "100%",
-        minHeight: `${MIN_PREVIEW_HEIGHT}px`,
-        overflow: "hidden",
-        placeItems: "center",
-        borderRadius: "6px",
-        background: "rgba(0, 0, 0, 0.22)",
-        pointerEvents: "none",
-    });
-    container.className = "fhs-load-image-path-preview";
-    container.style.setProperty(
-        "--comfy-widget-min-height",
-        `${MIN_PREVIEW_HEIGHT}px`,
-    );
-    container.style.setProperty("--comfy-widget-height", "100%");
-
-    const image = setStyles(document.createElement("img"), {
-        display: "none",
-        width: "100%",
-        height: "100%",
-        minWidth: "0",
-        minHeight: "0",
-        objectFit: "contain",
-    });
-    image.alt = "Load Image (Path) preview";
-    image.draggable = false;
-
-    const status = setStyles(document.createElement("div"), {
-        padding: "12px",
-        color: "var(--fg-color, #bbb)",
-        font: "12px sans-serif",
-        lineHeight: "1.4",
-        textAlign: "center",
-        overflowWrap: "anywhere",
-        userSelect: "none",
-    });
-    status.textContent = "输入图片路径以显示预览";
-
-    container.append(image, status);
-    return { container, image, status };
 }
 
 
@@ -112,20 +58,6 @@ app.registerExtension({
                 factory: app.widgets?.[PATH_WIDGET_FACTORY],
             });
 
-            const { container, image, status } = createPreviewElements();
-            const previewWidget = node.addDOMWidget(
-                "fhs_image_preview",
-                "preview",
-                container,
-                {
-                    serialize: false,
-                    hideOnZoom: false,
-                    getMinHeight: () => MIN_PREVIEW_HEIGHT,
-                    getHeight: () => "100%",
-                    selectOn: [],
-                },
-            );
-            previewWidget.serialize = false;
             node.resizable = true;
 
             const minimumSize = node.computeSize();
@@ -152,31 +84,32 @@ app.registerExtension({
                 }
             }
 
-            function showStatus(message, title = message) {
-                image.style.display = "none";
-                status.style.display = "block";
-                status.textContent = message;
-                status.title = title;
-                node.graph?.setDirtyCanvas(true, true);
+            function clearPreview() {
+                node.imgs = [];
+                node.imageIndex = null;
+                node.overIndex = null;
+                revokePreviewUrl();
+                node.graph?.setDirtyCanvas?.(true, true);
             }
 
-            function showImage(objectUrl) {
+            function showImage(objectUrl, image) {
                 revokePreviewUrl();
                 previewObjectUrl = objectUrl;
-                image.src = objectUrl;
-                image.style.display = "block";
-                status.style.display = "none";
-                node.graph?.setDirtyCanvas(true, true);
+                node.imgs = [image];
+                node.imageIndex = 0;
+                node.overIndex = null;
+                node.animatedImages = false;
+                node.graph?.setDirtyCanvas?.(true, true);
             }
 
             async function preloadImage(objectUrl) {
-                await new Promise((resolve, reject) => {
-                    const probe = new Image();
-                    probe.onload = resolve;
-                    probe.onerror = () => reject(
+                return await new Promise((resolve, reject) => {
+                    const image = new Image();
+                    image.onload = () => resolve(image);
+                    image.onerror = () => reject(
                         new Error("浏览器无法解码预览图片"),
                     );
-                    probe.src = objectUrl;
+                    image.src = objectUrl;
                 });
             }
 
@@ -187,15 +120,13 @@ app.registerExtension({
                 requestController?.abort();
                 requestController = undefined;
                 if (!imagePath) {
-                    revokePreviewUrl();
-                    image.removeAttribute("src");
-                    showStatus("输入图片路径以显示预览");
+                    clearPreview();
                     return;
                 }
 
                 const controller = new AbortController();
                 requestController = controller;
-                showStatus("正在加载预览…");
+                clearPreview();
 
                 const params = new URLSearchParams({
                     path: imagePath,
@@ -223,12 +154,12 @@ app.registerExtension({
                     }
 
                     nextObjectUrl = URL.createObjectURL(await response.blob());
-                    await preloadImage(nextObjectUrl);
+                    const image = await preloadImage(nextObjectUrl);
                     if (sequence !== requestSequence) {
                         URL.revokeObjectURL(nextObjectUrl);
                         return;
                     }
-                    showImage(nextObjectUrl);
+                    showImage(nextObjectUrl, image);
                     nextObjectUrl = undefined;
                 } catch (error) {
                     if (nextObjectUrl) {
@@ -237,12 +168,11 @@ app.registerExtension({
                     if (error?.name === "AbortError" || sequence !== requestSequence) {
                         return;
                     }
-                    revokePreviewUrl();
-                    image.removeAttribute("src");
+                    clearPreview();
                     const detail = error instanceof Error
                         ? error.message
                         : "无法生成图片预览";
-                    showStatus("预览不可用", detail);
+                    console.warn("[FileHelperSuite] 预览不可用:", detail);
                 } finally {
                     if (requestController === controller) {
                         requestController = undefined;
@@ -266,7 +196,7 @@ app.registerExtension({
                 clearTimeout(debounceTimer);
                 requestSequence += 1;
                 requestController?.abort();
-                revokePreviewUrl();
+                clearPreview();
                 removePathBrowser();
             });
 

@@ -16,7 +16,8 @@ def test_frontend_uses_comfy_extension_import_depth():
     assert 'from "../../../scripts/app.js"' in script
     assert 'from "../../../scripts/api.js"' in script
     assert 'from "./server_path_browser.js"' in script
-    assert 'objectFit: "contain"' in script
+    assert 'node.imgs = [image]' in script
+    assert 'addDOMWidget' not in script
     assert "node.resizable = true" in script
     assert "createServerPathWidgetFactory" in script
     assert "replaceServerPathWidget" in script
@@ -40,11 +41,15 @@ def test_path_browser_uses_file_helper_suite_names_only():
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="Node.js is unavailable")
-def test_path_browser_interactions():
+@pytest.mark.parametrize("filename", [
+    "frontend_path_browser.test.mjs",
+    "frontend_native_preview.test.mjs",
+])
+def test_frontend_interactions(filename):
     test_script = (
         Path(__file__).resolve().parents[1]
         / "tests"
-        / "frontend_path_browser.test.mjs"
+        / filename
     )
 
     subprocess.run(
