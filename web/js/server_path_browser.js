@@ -39,12 +39,68 @@ function positionDialog(dialog, event, app) {
     const x = Number.isFinite(event?.clientX) ? event.clientX : fallbackX;
     const y = Number.isFinite(event?.clientY) ? event.clientY : fallbackY;
 
+    // clientX/clientY and the available viewport height use viewport coordinates.
+    dialog.style.position = "fixed";
     dialog.style.left = `${Math.max(8, x - 20)}px`;
     dialog.style.top = `${Math.max(8, y - 20)}px`;
     if ((app.canvas?.ds?.scale ?? 1) > 1) {
         dialog.style.transform = `scale(${app.canvas.ds.scale})`;
         dialog.style.transformOrigin = "top left";
     }
+}
+
+
+function fitDialogToViewport(state, documentRef, app) {
+    const windowRef = documentRef.defaultView;
+    if (!windowRef) return () => {};
+
+    const { dialog, helper } = state;
+    Object.assign(dialog.style, {
+        height: "auto",
+        minHeight: "0",
+        maxHeight: "none",
+    });
+    Object.assign(helper.style, {
+        height: "auto",
+        minHeight: "0",
+        boxSizing: "border-box",
+        overflowY: "auto",
+        overscrollBehavior: "contain",
+    });
+    const scale = Math.max(1, app.canvas?.ds?.scale ?? 1);
+    const viewport = windowRef.visualViewport;
+
+    function updateHeight() {
+        const viewportBottom = viewport
+            ? viewport.offsetTop + viewport.height
+            : windowRef.innerHeight;
+        const listRect = helper.getBoundingClientRect();
+        const dialogRect = dialog.getBoundingClientRect();
+        const bottomInset = Math.max(0, dialogRect.bottom - listRect.bottom);
+        // Rects are in screen pixels, while CSS max-height is before transform.
+        const available = Math.max(
+            0, (viewportBottom - 12 - listRect.top - bottomInset) / scale,
+        );
+        const maxHeight = `${available}px`;
+        if (helper.style.maxHeight !== maxHeight) {
+            helper.style.maxHeight = maxHeight;
+        }
+    }
+
+    updateHeight();
+    windowRef.addEventListener("resize", updateHeight);
+    viewport?.addEventListener("resize", updateHeight);
+    viewport?.addEventListener("scroll", updateHeight);
+    const observer = windowRef.ResizeObserver
+        ? new windowRef.ResizeObserver(updateHeight)
+        : undefined;
+    observer?.observe(dialog);
+    return () => {
+        observer?.disconnect();
+        windowRef.removeEventListener("resize", updateHeight);
+        viewport?.removeEventListener("resize", updateHeight);
+        viewport?.removeEventListener("scroll", updateHeight);
+    };
 }
 
 
@@ -155,6 +211,7 @@ function closeActiveDialog(widget) {
     clearTimeout(state.debounceTimer);
     state.requestSequence += 1;
     state.requestController?.abort();
+    state.removeViewportListeners?.();
     state.dialog.remove();
     delete widget.fhsPathBrowserState;
 }
@@ -371,6 +428,7 @@ function openPathDialog({
 
     documentRef.body.append(state.dialog);
     positionDialog(state.dialog, event, app);
+    state.removeViewportListeners = fitDialogToViewport(state, documentRef, app);
     state.input.focus();
     scheduleListing(0);
     return state;

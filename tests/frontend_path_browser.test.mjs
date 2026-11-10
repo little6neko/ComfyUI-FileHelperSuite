@@ -72,6 +72,12 @@ class FakeElement {
         this.listeners.set(type, callbacks);
     }
 
+    removeEventListener(type, callback) {
+        this.listeners.set(type, (this.listeners.get(type) ?? []).filter(
+            listener => listener !== callback,
+        ));
+    }
+
     async dispatch(type, values = {}) {
         const event = {
             preventDefault() {},
@@ -199,6 +205,49 @@ function okResponse(listing) {
         },
     };
 }
+
+
+test("list height follows viewport and scale and releases resize listeners", async () => {
+    const harness = makeHarness(async () => okResponse({
+        directory: "", value: "", parent: null, remainder: "", entries: [],
+    }));
+    const windowRef = new FakeElement("window");
+    windowRef.innerHeight = 800;
+    let disconnected = false;
+    windowRef.ResizeObserver = class {
+        observe() {}
+        disconnect() { disconnected = true; }
+    };
+    harness.documentRef.defaultView = windowRef;
+    const createElement = harness.documentRef.createElement.bind(harness.documentRef);
+    harness.documentRef.createElement = tag => {
+        const element = createElement(tag);
+        element.getBoundingClientRect = () => element.className === "helper"
+            ? { top: 250, bottom: 390 }
+            : { top: 180, bottom: 400 };
+        return element;
+    };
+    harness.app.canvas.ds.scale = 2;
+    try {
+        harness.widget.mouse({ clientX: 100, clientY: 200 });
+        const state = harness.widget.fhsPathBrowserState;
+        assert.equal(state.dialog.style.top, "180px");
+        assert.equal(state.helper.style.height, "auto");
+        assert.equal(state.helper.style.maxHeight, "264px");
+        assert.equal(state.helper.style.overflowY, "auto");
+        windowRef.innerHeight = 600;
+        await windowRef.dispatch("resize");
+        assert.equal(state.helper.style.maxHeight, "164px");
+        assert.equal(state.dialog.style.top, "180px");
+        windowRef.innerHeight = 240;
+        await windowRef.dispatch("resize");
+        assert.equal(state.helper.style.maxHeight, "0px");
+    } finally {
+        harness.cleanup();
+    }
+    assert.equal(disconnected, true);
+    assert.equal(windowRef.listeners.get("resize").length, 0);
+});
 
 
 test("IME refreshes candidates during composition without touching text", async () => {
